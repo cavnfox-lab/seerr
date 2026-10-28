@@ -55,9 +55,9 @@ os.execv(os.environ['REAL_GIT'], [os.environ['REAL_GIT']] + a)
             GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
             GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
             GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid',
-            GITHUB_REPOSITORY='NotCavnfox/'+UPSTREAM.rsplit('/', 1)[1],
+            GITHUB_REPOSITORY='cavnfox-lab/' +UPSTREAM.rsplit('/', 1)[1],
             UPSTREAM_REPO=UPSTREAM, BASE_BRANCH=BASE, UPSTREAM_TAG='v1.2.3',
-            RELEASE_TAG='v1.2.3-fork.1', GITHUB_OUTPUT=str(self.root/'output'))
+            RELEASE_TAG='v1.2.3-cav.1', GITHUB_OUTPUT=str(self.root/'output'))
         self.seed = self.root / 'seed'
         self.seed.mkdir()
         self.git(self.seed, 'init', '-b', BASE)
@@ -111,8 +111,9 @@ os.execv(os.environ['REAL_GIT'], [os.environ['REAL_GIT']] + a)
         triggers = publisher.get('on', publisher.get(True))
         self.assertEqual(set(triggers), {'workflow_dispatch'})
         guard = publisher['jobs']['release']['steps'][0]['run']
-        for ref_type, ref_name, passes in [('tag','v1.2.3',True),
-                ('tag','v2026.9.0-fork.2',True), ('branch','v1.2.3',False),
+        for ref_type, ref_name, passes in [('tag','v1.2.3-cav.1',True), ('tag','v1.2.3',False), ('tag','v1.2.3-fork.1',False),
+                ('tag','v1.2.3-cav.0',False),
+                ('tag','v2026.9.0-cav.2',True), ('branch','v1.2.3',False),
                 ('tag','v1.2.3-rc.1',False), ('tag','v1.2.3; touch injected',False)]:
             with self.subTest(ref_type=ref_type, ref_name=ref_name):
                 env = dict(self.env, REF_TYPE=ref_type, REF_NAME=ref_name)
@@ -120,6 +121,15 @@ os.execv(os.environ['REAL_GIT'], [os.environ['REAL_GIT']] + a)
                                    text=True,capture_output=True)
                 self.assertEqual(r.returncode == 0, passes, r.stderr)
         self.assertFalse((self.work/'injected').exists())
+
+    def test_publisher_derives_owner_and_refuses_overwrite(self):
+        for name in ('fork-release.yml', 'fork-build-test.yml'):
+            text = (ROOT/'.github/workflows'/name).read_text().lower()
+            self.assertNotIn('ghcr.io/notcavnfox', text)
+        text = (ROOT/'.github/workflows/fork-release.yml').read_text()
+        self.assertIn('GITHUB_REPOSITORY,,', text)
+        self.assertIn('imagetools inspect', text)
+        self.assertIn('type=raw,value=${{ github.ref_name }}', text)
 
     def test_latest_failed_run_is_not_masked_by_earlier_success(self):
         self.state_update(runs=[{'status': 'completed', 'conclusion': 'failure'},
@@ -155,20 +165,21 @@ os.execv(os.environ['REAL_GIT'], [os.environ['REAL_GIT']] + a)
     def test_exact_sha_release_and_dispatch(self):
         self.step(0)
         self.step(1)
-        self.assertEqual(self.git(self.origin, 'rev-parse', 'v1.2.3-fork.1^{commit}'), self.sha)
+        self.assertEqual(self.git(self.origin, 'rev-parse', 'v1.2.3-cav.1^{commit}'), self.sha)
         calls = self.gh_calls()
         run = next(c for c in calls if c[:2] == ['run', 'list'])
         self.assertEqual(run[run.index('--commit')+1], self.sha)
         dispatch = [c for c in calls if c[:2] == ['workflow', 'run']]
         self.assertEqual(len(dispatch), 1)
-        self.assertEqual(dispatch[0][dispatch[0].index('--ref')+1], 'v1.2.3-fork.1')
+        self.assertEqual(dispatch[0][dispatch[0].index('--ref')+1], 'v1.2.3-cav.1')
         pushes = [json.loads(x) for x in self.git_calls.read_text().splitlines()
                   if json.loads(x)[0] == 'push']
-        self.assertEqual(pushes, [['push', 'origin', 'refs/tags/v1.2.3-fork.1']])
+        self.assertEqual(pushes, [['push', 'origin', 'refs/tags/v1.2.3-cav.1']])
 
     def test_invalid_inputs_rejected_before_external_calls(self):
         for key, value in [('UPSTREAM_TAG', 'v1.2.3; touch injected'),
-                           ('RELEASE_TAG', 'v1.2.30-fork.1'), ('RELEASE_SHA', 'main')]:
+                           ('RELEASE_TAG', 'v1.2.30-cav.1'), ('RELEASE_TAG', 'v1.2.3'),
+                           ('RELEASE_TAG', 'v1.2.3-fork.1'), ('RELEASE_SHA', 'main')]:
             with self.subTest(key=key):
                 prior = self.env[key]
                 self.env[key] = value
@@ -205,17 +216,17 @@ os.execv(os.environ['REAL_GIT'], [os.environ['REAL_GIT']] + a)
         self.git(self.seed, 'commit', '-m', 'unrelated upstream')
         self.git(self.seed, 'tag', 'v9.0.0')
         self.git(self.seed, 'push', str(self.upstream), 'refs/tags/v9.0.0')
-        self.env.update(UPSTREAM_TAG='v9.0.0', RELEASE_TAG='v9.0.0')
+        self.env.update(UPSTREAM_TAG='v9.0.0', RELEASE_TAG='v9.0.0-cav.1')
         self.state_update(release={'tag_name':'v9.0.0', 'draft':False,
                                   'prerelease':False, 'published_at':'2026-09-13'})
         self.step(0, succeeds=False)
         self.assertFalse(any(c[:2] == ['run','list'] for c in self.gh_calls()))
 
     def test_existing_tag_is_never_moved_or_redispatched(self):
-        self.git(self.origin, 'tag', 'v1.2.3-fork.1', self.upstream_sha)
+        self.git(self.origin, 'tag', 'v1.2.3-cav.1', self.upstream_sha)
         self.step(0)
         self.step(1, succeeds=False)
-        self.assertEqual(self.git(self.origin, 'rev-parse', 'v1.2.3-fork.1'), self.upstream_sha)
+        self.assertEqual(self.git(self.origin, 'rev-parse', 'v1.2.3-cav.1'), self.upstream_sha)
         self.assertFalse(any(c[:2] == ['workflow','run'] for c in self.gh_calls()))
 
     def test_publisher_blob_mismatch_rejected(self):
